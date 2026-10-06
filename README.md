@@ -12,11 +12,13 @@ Inspired by Brian Burke's DeepQB (ESPN / MIT Sloan 2019), extended to pocket beh
 
 ## Clutch Definition
 
-| Label | Win Probability |
-|-------|----------------|
-| Clutch | 40% – 60% |
-| Non-clutch | < 20% or > 80% |
-| Neutral | Everything else (excluded from primary analysis) |
+Set in `00_download_pbp.py`:
+
+| Label | Rule |
+|-------|------|
+| Clutch | Q4 or OT **and** any of: win probability 40–60%; 4th down with \|score diff\| ≤ 8; trailing by ≤ 8 with ≤ 120 s left |
+| Non-clutch | Win probability < 20% or > 80% (and not clutch) |
+| Neutral | Everything else |
 
 **Clutch Optimality Rating** = mean(Optimality Score in clutch) − mean(Optimality Score across all of the QB's plays)  
 Positive → QB outperforms model expectations more when the game is close than he does on average.
