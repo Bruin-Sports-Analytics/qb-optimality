@@ -18,8 +18,8 @@ Inspired by Brian Burke's DeepQB (ESPN / MIT Sloan 2019), extended to pocket beh
 | Non-clutch | < 20% or > 80% |
 | Neutral | Everything else (excluded from primary analysis) |
 
-**Clutch Optimality Rating** = mean(Optimality Score in clutch) − mean(Optimality Score in non-clutch)  
-Positive → QB outperforms model expectations more when the game is close.
+**Clutch Optimality Rating** = mean(Optimality Score in clutch) − mean(Optimality Score across all of the QB's plays)  
+Positive → QB outperforms model expectations more when the game is close than he does on average.
 
 ---
 
@@ -51,10 +51,10 @@ qb-optimality/
 ├── notebooks/                        # Exploratory analysis
 ├── 00_download_pbp.py                # Download nflfastR PBP data
 ├── 01_validate_data.py               # Validate all data files are present
-├── 02_feature_engineering.py         # (upcoming) Build spatial features
-├── 03_model_training.py              # (upcoming) Train XGBoost model
-├── 04_analysis.py                    # (upcoming) Compute Optimality Scores
-├── 05_clutch_rating.py               # (upcoming) QB Clutch Optimality Rankings
+├── features/                         # qb_features.py, rusher_features.py, pocket_features.py
+├── 02_feature_engineering.py         # Join tracking to PBP, extract snap/release frames, build features
+├── 03_model_training.py              # Train XGBoost EPA model (leave-one-week-out CV)
+├── 04_analysis.py                    # Optimality scores + QB clutch ratings
 ├── requirements.txt
 └── README.md
 ```
@@ -111,8 +111,9 @@ All 13 file checks should pass before proceeding.
 
 - **Algorithm:** XGBoost regressor
 - **Target:** EPA per play
-- **Split:** Train weeks 1–6 / Validate week 7 / Test week 8
-- **Sample size:** ~5,000–8,000 QB dropback plays (weeks 1–8, 2021)
+- **Validation:** leave-one-week-out across weeks 1–8 (the model never scores a week it trained on)
+- **Sample size:** 7,088 QB dropbacks (weeks 1–8, 2021)
+- **Tuned hyperparameters:** 200 trees, max depth 3, learning rate 0.05
 
 Neural networks were ruled out — sample size is too small for reliable generalization at this scope.
 
@@ -125,127 +126,45 @@ Neural networks were ruled out — sample size is too small for reliable general
 kaggle download + unzip     →  data/raw/big_data_bowl_2023/
 01_validate_data.py         →  confirms all inputs present
 02_feature_engineering.py   →  data/processed/features.parquet
-03_model_training.py        →  outputs/model.json + validation metrics
-04_analysis.py              →  outputs/tables/play_optimality.csv
-05_clutch_rating.py         →  outputs/tables/qb_clutch_ratings.csv
+03_model_training.py        →  outputs/model.json, outputs/tables/model_summary.json, play_predictions.csv
+04_analysis.py              →  outputs/tables/qb_clutch_ratings.csv
 ```
 
 ---
 
-## Team Tasks
+## Results
 
-Feature engineering (script `02`) parallelizes across three people. All three write standalone functions with the same interface — takes a DataFrame of tracking frames for one play, returns a dict of features. Eshaan integrates them. Model and analysis are sequential after that.
+**Model:** leave-one-week-out RMSE of **1.57 EPA** overall (1.60 on the held-out test week), with
+per-week RMSE between 1.50 and 1.70. EPA per play is noisy, so the model's job is to set a fair
+expectation for each dropback, not to predict it exactly.
 
-```
-Abhi ──┐
-Gonzalo─┼──▶ Eshaan integrates ──▶ Andrew trains model ──▶ Keith analyzes ──▶ Dillon visualizes
-Dillon ─┘
-```
+**Clutch ratings** (QBs with ≥10 clutch and ≥50 total dropbacks; full table in
+`outputs/tables/qb_clutch_ratings.csv`):
 
----
+| QB | Clutch rating | Clutch dropbacks |
+|---|---:|---:|
+| J. Herbert | +0.53 | 19 |
+| J. Goff | +0.43 | 11 |
+| L. Jackson | +0.40 | 14 |
+| … | | |
+| K. Cousins | −0.30 | 41 |
+| T. Brady | −0.44 | 20 |
+| C. Wentz | −0.50 | 19 |
 
-### Eshaan — Integration & Merge
-**Script:** `02_feature_engineering.py`  
-**Depends on:** everyone's feature functions  
-**Difficulty:** ★★★★★
+**Caveat:** clutch samples are small (11–41 dropbacks per QB, from 8 weeks of tracking data), so these
+are a first look, not a ranking. Next steps are bootstrapped intervals and more seasons of tracking data.
 
-The glue that holds everything together. Every downstream script depends on this being correct.
-
-**Tasks:**
-- [ ] Join Big Data Bowl `games.csv` to nflfastR PBP — translate integer `gameId` to nflfastR `game_id` format (e.g. `2021_01_ARI_TEN`)
-- [ ] Filter tracking data to QB dropback plays only (cross-reference `plays.csv`)
-- [ ] For each play, isolate the `ball_snap` frame and `pass_forward` frame from tracking data
-- [ ] Call `get_qb_features()`, `get_rusher_features()`, and `get_pocket_features()` per play
-- [ ] Merge all feature dicts with context features from PBP (down, distance, yardline, score differential, half_seconds_remaining)
-- [ ] Save final feature table to `data/processed/features.parquet`
-- [ ] Handle edge cases: plays missing snap/release frames, plays with no OL detected, sacks
-
-**Output columns:** `game_id`, `play_id`, `passer_player_name`, `week`, `situation`, `epa`, + all engineered features
+Write-up: https://eshaandhavala.github.io/entries/qb-clutch-optimality/
 
 ---
 
-### Abhi — Pocket Geometry Features
-**Script:** `features/pocket_features.py`  
-**Depends on:** nothing (standalone)  
-**Difficulty:** ★★★★☆
+## Team
 
-Hardest feature module. Requires geometric reasoning and correct player identification — wrong OL tagging silently corrupts every downstream model.
+Bruin Sports Analytics football research, spring 2026.
 
-**Tasks:**
-- [ ] Write `get_pocket_features(snap_frame, release_frame, players_df)` → dict
-- [ ] Identify the 5 offensive linemen using position data from `players.csv` (positions: `T`, `G`, `C`)
-- [ ] Compute convex hull area of OL positions at snap using `scipy.spatial.ConvexHull`
-- [ ] Compute convex hull area of OL positions at release
-- [ ] Derive `pocket_area_at_release` and `pocket_collapse_rate` = (snap_area − release_area) / time_elapsed
-- [ ] Handle edge cases: fewer than 3 OL detected (can't form hull), OL tagged as eligible receiver and split out
-
-**Returns:** `{"pocket_area_at_release": float, "pocket_collapse_rate": float}`
-
----
-
-### Andrew — Model Training
-**Script:** `03_model_training.py`  
-**Depends on:** `data/processed/features.parquet` (Eshaan's output)  
-**Difficulty:** ★★★☆☆
-
-**Tasks:**
-- [ ] Load `data/processed/features.parquet`, drop rows with any null features
-- [ ] Split by week: train = weeks 1–6, val = week 7, test = week 8
-- [ ] Define feature columns (exclude `game_id`, `play_id`, `passer_player_name`, `situation`, `epa`)
-- [ ] Train `xgboost.XGBRegressor` predicting `epa`
-- [ ] Tune at minimum: `n_estimators`, `max_depth`, `learning_rate`, `subsample` using val set RMSE
-- [ ] Report RMSE on val and test sets; print feature importances ranked
-- [ ] Save trained model to `outputs/model.json` using `model.save_model()`
-- [ ] Save predictions on full dataset to `outputs/tables/play_predictions.csv` (columns: `game_id`, `play_id`, `epa`, `predicted_epa`)
-
----
-
-### Keith — Analysis & Optimality Scores
-**Script:** `04_analysis.py`  
-**Depends on:** `outputs/tables/play_predictions.csv` (Andrew's output)  
-**Difficulty:** ★★☆☆☆
-
-**Tasks:**
-- [ ] Load `play_predictions.csv` and merge back with PBP to get `passer_player_name`, `situation`, `week`
-- [ ] Compute `optimality_score` = `epa` − `predicted_epa` per play
-- [ ] Group by `passer_player_name` × `situation` (clutch / non_clutch), compute mean optimality score
-- [ ] Filter to QBs with at least 50 clutch plays and 50 non-clutch plays
-- [ ] Compute **Clutch Optimality Rating** = mean(clutch optimality) − mean(non-clutch optimality) per QB
-- [ ] Save to `outputs/tables/qb_clutch_ratings.csv` with columns: `passer_player_name`, `clutch_optimality`, `non_clutch_optimality`, `clutch_rating`, `n_clutch_plays`, `n_non_clutch_plays`
-
----
-
-### Dillon — QB Spatial Features
-**Script:** `features/qb_features.py`  
-**Depends on:** nothing (standalone)  
-**Difficulty:** ★★☆☆☆
-
-**Tasks:**
-- [ ] Write `get_qb_features(snap_frame, release_frame, qb_nfl_id)` → dict
-- [ ] Look up QB's `(x, y)` position at snap frame and at release frame
-- [ ] Compute `qb_displacement` = Euclidean distance between snap and release positions
-- [ ] Extract `qb_speed_at_release` and `qb_orientation_at_release` directly from `s` and `o` columns at release frame
-- [ ] Compute `time_to_throw` = release frame timestamp − snap frame timestamp (in seconds)
-- [ ] Handle edge cases: QB not found in frame (use `nflId` from `plays.csv`), missing release frame
-
-**Returns:** `{"qb_displacement": float, "qb_speed_at_release": float, "qb_orientation_at_release": float, "time_to_throw": float}`
-
----
-
-### Gonzalo — Pass Rusher Features
-**Script:** `features/rusher_features.py`  
-**Depends on:** nothing (standalone)  
-**Difficulty:** ★☆☆☆☆
-
-Most mechanical module. Spatial lookups using PFF role tags.
-
-**Tasks:**
-- [ ] Write `get_rusher_features(release_frame, qb_nfl_id, pff_play_df)` → dict
-- [ ] Filter `pff_play_df` to rows where `pff_role == "Pass Rush"` to identify rushers
-- [ ] For each rusher, compute distance to QB at release frame using Euclidean distance on `(x, y)`
-- [ ] Return `nearest_rusher_dist` = minimum distance across all rushers
-- [ ] Compute approach speed for the 2 nearest rushers using their `s` (speed) column at release frame; return as `rusher_1_approach_speed`, `rusher_2_approach_speed`
-- [ ] Return `rushers_within_3yds` = count of rushers with distance < 3.0 yards
-- [ ] Handle edge cases: no rushers tagged (set all to `NaN`), fewer than 2 rushers (second approach speed = `NaN`)
-
-**Returns:** `{"nearest_rusher_dist": float, "rusher_1_approach_speed": float, "rusher_2_approach_speed": float, "rushers_within_3yds": int}`
+- **Eshaan Dhavala:** integration and feature-engineering pipeline, pass-rusher features, leakage and bug fixes, final model and ratings
+- **Abhi Kumar:** pocket geometry features
+- **Andrew:** model training script
+- **Keith Bui:** optimality and clutch analysis
+- **Dillon Maheshwari:** QB spatial features
+- **Gonzalo Merino Sanchez:** first draft of pass-rusher features
